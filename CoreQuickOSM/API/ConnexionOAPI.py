@@ -22,17 +22,19 @@
 """
 
 from QuickOSM import *
-import urllib2
-import urllib
+from PyQt4.QtNetwork import QNetworkAccessManager,QNetworkRequest,QNetworkReply
 import re
+import urllib2
 import tempfile
 
-class ConnexionOAPI:
+class ConnexionOAPI(QObject):
     '''
     Manage connexion to the overpass API
     '''
 
-    def __init__(self,url="http://overpass-api.de/api/", output = None):
+    signalText = pyqtSignal(str, name='signalText')
+    
+    def __init__(self,parent = None, url="http://overpass-api.de/api/", output = None):
         '''
         Constructor
         @param url:URL of OverPass
@@ -40,6 +42,7 @@ class ConnexionOAPI:
         @param output:Output desired (XML or JSON)
         @type output:str
         '''
+        self.parent = parent
         
         if not url:
             url="http://overpass-api.de/api/"
@@ -50,6 +53,11 @@ class ConnexionOAPI:
             raise OutPutFormatException
         self.__output = output
         
+        self.network = QNetworkAccessManager()
+        self.data = None
+        
+        QObject.__init__(self)
+        
     def query(self,req):
         '''
         Make a query to the overpass
@@ -59,32 +67,60 @@ class ConnexionOAPI:
         @return: the result of the query
         @rtype: str
         '''
-        req = req.encode('utf8')
-        urlQuery = self.__url + 'interpreter'
+        
+        urlQuery = QUrl(self.__url + 'interpreter')
         
         #The output format can be forced (JSON or XML)
         if self.__output:
             req = re.sub(r'output="[a-z]*"','output="'+self.__output+'"', req)
             req = re.sub(r'\[out:[a-z]*','[out:'+self.__output, req)
         
-        queryString = urllib.urlencode({'data':req,'info':'QgisQuickOSMPlugin'})
+        encodedQuery = QUrl.toPercentEncoding(req)
+        urlQuery.addEncodedQueryItem('data',encodedQuery)
+        urlQuery.addQueryItem('info','QgisQuickOSMPlugin')        
+        urlQuery.setPort(80)
+
+        self.networkReply = self.network.get(QNetworkRequest(urlQuery))
+        self.loop = QEventLoop();
+        self.network.finished.connect(self.endOfRequest)
+        self.networkReply.downloadProgress.connect(self.downloadProgress)
+        self.loop.exec_()
+        
+        if self.parent.exiting:
+            self.parent.signalProcessThreadFinished.emit(-1)
+            return -1
         
         try:
-            data = urllib2.urlopen(url=urlQuery, data=queryString).read()
-        except urllib2.HTTPError as e:
-            if e.code == 400:
+            if self.networkReply.error() == QNetworkReply.NoError:
+                
+                if re.search('<remark> runtime error: Query timed out in "[a-z]+" at line [\d]+ after ([\d]+) seconds. </remark>', self.data):
+                    raise OverpassTimeoutException
+                        
+            elif self.networkReply.error() == QNetworkReply.UnknownContentError:
+                print "erreur 400"
                 raise OverpassBadRequestException
-            else:
-                raise NetWorkErrorException(suffix="Overpass API")
-        except urllib2.URLError as e:
-            raise NetWorkErrorException(suffix="Overpass API")
-
-        result = re.search('<remark> runtime error: Query timed out in "[a-z]+" at line [\d]+ after ([\d]+) seconds. </remark>', data)
-        if result:
-            result = result.groups()
-            raise OverpassTimeoutException
             
-        return data
+            else:
+                print "erreur"
+                raise NetWorkErrorException(suffix="Overpass API")
+        
+        except:
+            import sys
+            (type, value, traceback) = sys.exc_info()
+            #sys.excepthook(type, value, traceback)
+        
+        self.networkReply.deleteLater()    
+        return self.data
+
+    def downloadProgress(self,bytesRead, totalBytes):
+        self.signalText.emit(QApplication.translate("QuickOSM",u"Downloading data from Overpass : " + self.convertSize(bytesRead)))
+        if self.parent.exiting:
+            self.networkReply.abort()
+            self.parent.signalProcessThreadFinished.emit(-1)
+
+    def endOfRequest(self,test):
+        self.data = self.networkReply.readAll()
+        self.loop.quit()
             
     def getFileFromQuery(self,req):
         '''
@@ -125,3 +161,9 @@ class ConnexionOAPI:
             return True
         except urllib2.HTTPError:
             return False
+        
+    def convertSize(self, size):
+        for x in ['bytes','KB','MB','GB','TB']:
+            if size < 1024.0:
+                return "%3.1f %s" % (size, x)
+            size /= 1024.0

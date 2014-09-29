@@ -28,7 +28,7 @@ import tempfile
 import os
 import re
 
-class OsmParser(QObject):
+class OsmParser(QThread):
     '''
     Parse an OSM file with OGR
     '''
@@ -48,7 +48,7 @@ class OsmParser(QObject):
     #Whitle list for the attribute table, if set to None all the keys will be keep
     WHITE_LIST = {'multilinestrings': None, 'points': None, 'lines': None, 'multipolygons': None}
     
-    def __init__(self,osmFile, layers = OSM_LAYERS, whiteListColumn = WHITE_LIST, deleteEmptyLayers = False, loadOnly = False, osmConf = None):
+    def __init__(self, osmFile, parent = None, layers = OSM_LAYERS, whiteListColumn = WHITE_LIST, deleteEmptyLayers = False, loadOnly = False, osmConf = None):
         self.__osmFile = osmFile
         self.__layers = layers
         if not whiteListColumn:
@@ -64,13 +64,16 @@ class OsmParser(QObject):
         else:
             self.__osmconf = str(osmConf.encode("utf-8"))
         
-        QObject.__init__(self)
+        QThread.__init__(self, parent)
+        self.parent = parent
+        self.exiting = False
+        self.layers = None
         
-    def parse(self):
+    def run(self):
         '''
         Start parsing the osm file
         ''' 
-        
+                
         #Configuration for OGR
         gdal.SetConfigOption('OSM_CONFIG_FILE', self.__osmconf)
         gdal.SetConfigOption('OSM_USE_CUSTOM_INDEXING', 'NO')
@@ -102,9 +105,14 @@ class OsmParser(QObject):
                 if re.search(r'(way|relation)',line):
                     raise WrongOrderOSMException
         
+        if self.parent.exiting:
+            self.parent.signalProcessThreadFinished.emit(-1)
+            return -1
+        
         #Foreach layers
         for layer in self.__layers:
             self.signalText.emit(QApplication.translate("QuickOSM",u"Parsing layer : " + layer))
+            self.signalPercentage.emit(0)
             layers[layer] = {}
             
             #Reading it with a QgsVectorLayer
@@ -146,8 +154,14 @@ class OsmParser(QObject):
                                     layers[layer]['tags'].append(key)
                             else:
                                 layers[layer]['tags'].append(key)
-                                
-                self.signalPercentage.emit(int(100 / len(self.__layers) * (i+1)))
+                
+                percent = int((i+1)*100/len(self.__layers))
+                if percent % 5 == 0:                
+                    self.signalPercentage.emit(percent)
+                
+                if self.parent.exiting:
+                    self.parent.signalProcessThreadFinished.emit(-1)
+                    return -1
         
         #Delete empty layers if this option is set to True
         if self.__deleteEmptyLayers:
@@ -158,6 +172,10 @@ class OsmParser(QObject):
             for layer in deleteLayers:
                 del layers[layer]
 
+        if self.parent.exiting:
+            self.parent.signalProcessThreadFinished.emit(-1)
+            return -1
+        
         #Creating GeoJSON files for each layers
         for layer in self.__layers:
             self.signalText.emit(QApplication.translate("QuickOSM",u"Creating GeoJSON file : " + layer))
@@ -225,8 +243,15 @@ class OsmParser(QObject):
                     fet.setAttributes(newAttrs)
                     fileWriter.addFeature(fet)
             
-                    self.signalPercentage.emit(int(100 / layers[layer]['featureCount'] * (i+1)))
+                percent = int((i+1)*100/layers[layer]['featureCount'])
+                if percent % 5 == 0:                
+                    self.signalPercentage.emit(percent)
+                    
+                if self.parent.exiting:
+                    self.parent.signalProcessThreadFinished.emit(-1)
+                    return -1
                   
             del fileWriter
             
-        return layers
+        self.layers = layers
+        return

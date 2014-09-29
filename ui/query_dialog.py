@@ -69,6 +69,11 @@ class QueryWidget(QuickOSMWidget, Ui_ui_query):
         popupmenu.addAction(saveTemplateQueryAction)
         self.pushButton_saveQuery.setMenu(popupmenu)
         
+        #Thread
+        self.process = Process()
+        self.process.signalProcessThreadFinished.connect(self.endQuery)
+        self.process.signalPercentage.connect(self.setProgressPercentage)
+        
         #connect
         self.pushButton_runQuery.clicked.connect(self.runQuery)
         self.pushButton_generateQuery.clicked.connect(self.generateQuery)
@@ -136,58 +141,85 @@ class QueryWidget(QuickOSMWidget, Ui_ui_query):
         Process for running the query
         '''
         
-        #Block the button and save the initial text
-        self.pushButton_browse_output_file.setDisabled(True)
-        self.pushButton_generateQuery.setDisabled(True)
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        self.startProcess()
-        QApplication.processEvents()
+        self.pushButton_runQuery.setEnabled(False)
         
-        #Get all values
-        query = unicode(self.textEdit_query.toPlainText())
-        outputDir = self.lineEdit_browseDir.text()
-        prefixFile = self.lineEdit_filePrefix.text()
-        nominatim = self.lineEdit_nominatim.text()
-        
-        #Set bbox
-        bbox = None
-        if self.radioButton_extentLayer.isChecked() or self.radioButton_extentMapCanvas.isChecked():
-            bbox = self.getBBox()
-        
-        #Which geometry at the end ?
-        outputGeomTypes = self.getOutputGeomTypes()
-        whiteListValues = self.getWhiteListValues()
-        
-        try:
-            #Test values
-            if not outputGeomTypes:
-                raise OutPutGeomTypesException
+        if self.process.isRunning():
+            self.process.exiting = True
+            import time
+            while self.process.isRunning():
+                time.sleep(0.5)
+                continue
             
-            if outputDir and not os.path.isdir(outputDir):
-                raise DirectoryOutPutException
+            self.pushButton_runQuery.setText("Run Query")
+            self.pushButton_runQuery.setEnabled(True)            
+            
+        else:
+            self.process.exiting = False
+            self.pushButton_runQuery.setText("Cancel ?")
+            #Block the button and save the initial text
+            #self.pushButton_browse_output_file.setDisabled(True)
+            #self.pushButton_generateQuery.setDisabled(True)
+            #QApplication.setOverrideCursor(Qt.WaitCursor)
+            #self.startProcess()
+            #QApplication.processEvents()
+            
+            #Get all values
+            query = unicode(self.textEdit_query.toPlainText())
+            outputDir = self.lineEdit_browseDir.text()
+            prefixFile = self.lineEdit_filePrefix.text()
+            nominatim = self.lineEdit_nominatim.text()
+            
+            #Set bbox
+            bbox = None
+            if self.radioButton_extentLayer.isChecked() or self.radioButton_extentMapCanvas.isChecked():
+                bbox = self.getBBox()
+            
+            #Which geometry at the end ?
+            outputGeomTypes = self.getOutputGeomTypes()
+            whiteListValues = self.getWhiteListValues()
+            
+            try:
+                #Test values
+                if not outputGeomTypes:
+                    raise OutPutGeomTypesException
+                
+                if outputDir and not os.path.isdir(outputDir):
+                    raise DirectoryOutPutException
+    
+                if not nominatim and (re.search('{{nominatim}}', query) or re.search('{{nominatimArea:}}', query)):
+                    raise MissingParameterException(suffix="nominatim field")
+                
+                
+                self.process.setParameters(dialog = self, query=query, outputDir=outputDir, prefixFile=prefixFile,outputGeomTypes=outputGeomTypes, whiteListValues=whiteListValues, nominatim=nominatim, bbox=bbox)
+                self.process.start()
+                self.pushButton_runQuery.setEnabled(True)
+            
+            except GeoAlgorithmExecutionException,e:
+                self.displayGeoAlgorithmException(e)
+            #except Exception,e:
+            #    self.displayException(e)
+            
+            #finally:
+                #Resetting the button
+                #self.pushButton_runQuery.setText("Run Query")
+                #self.pushButton_browse_output_file.setDisabled(False)
+                #self.pushButton_generateQuery.setDisabled(False)
+                #QApplication.restoreOverrideCursor()
+                #self.endProcess()
+                #QApplication.processEvents()
 
-            if not nominatim and (re.search('{{nominatim}}', query) or re.search('{{nominatimArea:}}', query)):
-                raise MissingParameterException(suffix="nominatim field")
-
-            numLayers = Process.ProcessQuery(dialog = self, query=query, outputDir=outputDir, prefixFile=prefixFile,outputGeomTypes=outputGeomTypes, whiteListValues=whiteListValues, nominatim=nominatim, bbox=bbox)
-            if numLayers:
-                iface.messageBar().pushMessage(QApplication.translate("QuickOSM",u"Successful query !"), level=QgsMessageBar.INFO , duration=5)
-                self.label_progress.setText(QApplication.translate("QuickOSM",u"Successful query !"))
-            else:
-                iface.messageBar().pushMessage(QApplication.translate("QuickOSM", u"Successful query, but no result."), level=QgsMessageBar.WARNING , duration=7)
-        
-        except GeoAlgorithmExecutionException,e:
-            self.displayGeoAlgorithmException(e)
-        except Exception,e:
-            self.displayException(e)
-        
-        finally:
-            #Resetting the button
-            self.pushButton_browse_output_file.setDisabled(False)
-            self.pushButton_generateQuery.setDisabled(False)
-            QApplication.restoreOverrideCursor()
-            self.endProcess()
-            QApplication.processEvents()
+    def endQuery(self,numLayers):
+        if numLayers >= 1:
+            QgsMapLayerRegistry.instance().addMapLayers(self.process.layers)
+            iface.messageBar().pushMessage(QApplication.translate("QuickOSM",u"Successful query !"), level=QgsMessageBar.INFO , duration=5)
+            self.label_progress.setText(QApplication.translate("QuickOSM",u"Successful query !"))
+        elif numLayers == 0:
+            iface.messageBar().pushMessage(QApplication.translate("QuickOSM", u"Successful query, but no result."), level=QgsMessageBar.WARNING , duration=7)
+        else:
+            self.label_progress.setText(QApplication.translate("QuickOSM",u"Query canceled"))
+            self.progressBar_execution.setMaximum(100)
+            self.progressBar_execution.setValue(0)
+        self.pushButton_runQuery.setText("Run Query")
             
     def generateQuery(self):
         '''

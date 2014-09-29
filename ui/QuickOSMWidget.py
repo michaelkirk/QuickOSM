@@ -116,7 +116,7 @@ class QuickOSMWidget(QWidget):
         #If mapCanvas is checked
         if self.radioButton_extentMapCanvas.isChecked():
             geomExtent = iface.mapCanvas().extent()
-            sourceCrs = iface.mapCanvas().mapRenderer().destinationCrs()
+            sourceCrs = iface.mapCanvas().mapSettings().destinationCrs() if hasattr(iface.mapCanvas(),"mapSettings") else iface.mapCanvas().mapRenderer().destinationCrs()
         else:
             #Else if a layer is checked
             index = self.comboBox_extentLayer.currentIndex()
@@ -186,11 +186,12 @@ class QuickOSMWidget(QWidget):
         '''
         Display others exceptions 
         '''
-        import sys,os
+        print e
+        '''import sys,os
         exc_type, exc_obj, exc_tb = sys.exc_info()
         fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
         print(exc_type, fname, exc_tb.tb_lineno)
         ex_type, ex, tb = sys.exc_info()
         import traceback
         traceback.print_tb(tb)
-        iface.messageBar().pushMessage("Error in the python console, please report it", level=QgsMessageBar.CRITICAL , duration=5)
+        iface.messageBar().pushMessage("Error in the python console, please report it", level=QgsMessageBar.CRITICAL , duration=5)'''
