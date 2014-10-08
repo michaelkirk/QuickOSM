@@ -37,6 +37,8 @@ class OsmParser(QThread):
     signalPercentage = pyqtSignal(int, name='signalPercentage')
     #Signal text
     signalText = pyqtSignal(str, name='signalText')
+    #Signal Exception
+    signalException = pyqtSignal(str, name='signalException')
     
     #Layers available in the OGR driver for OSM, other_relations is useless without specific parser
     OSM_LAYERS = ['points','lines','multilinestrings','multipolygons','other_relations']
@@ -73,148 +75,169 @@ class OsmParser(QThread):
         '''
         Start parsing the osm file
         ''' 
+        try:
+                        
+            #Configuration for OGR
+            gdal.SetConfigOption('OSM_CONFIG_FILE', self.__osmconf)
+            gdal.SetConfigOption('OSM_USE_CUSTOM_INDEXING', 'NO')
+            
+            if not os.path.isfile(self.__osmFile):
+                raise GeoAlgorithmExecutionException, "File doesn't exist"
+            
+            uri = self.__osmFile + "|layername="
+            layers = {}
+            
+            #If loadOnly, no parsing required:
+            #It's used only when we ask to open an osm file
+            if self.__loadOnly:
+                fileName = os.path.basename(self.__osmFile)
+                for layer in self.__layers:
+                    layers[layer] = QgsVectorLayer(uri + layer, fileName + " " + layer,"ogr")
                 
-        #Configuration for OGR
-        gdal.SetConfigOption('OSM_CONFIG_FILE', self.__osmconf)
-        gdal.SetConfigOption('OSM_USE_CUSTOM_INDEXING', 'NO')
-        
-        if not os.path.isfile(self.__osmFile):
-            raise GeoAlgorithmExecutionException, "File doesn't exist"
-        
-        uri = self.__osmFile + "|layername="
-        layers = {}
-        
-        #If loadOnly, no parsing required:
-        #It's used only when we ask to open an osm file
-        if self.__loadOnly:
-            fileName = os.path.basename(self.__osmFile)
+                    if not layers[layer].isValid():
+                        print "Error on the layer", layers[layer].lastError()
+                    
+                return layers              
+            
+            #Check if the order is node before way,relation
+            #We don't check way before relation, because we can have only nodes and relations
+            with open(self.__osmFile) as f:
+                for line in f:
+                    if re.search(r'node',line):
+                        break
+                    if re.search(r'(way|relation)',line):
+                        raise WrongOrderOSMException
+            
+            if self.parent.exiting:
+                self.parent.signalProcessThreadFinished.emit(-1)
+                return -1
+            
+            #Foreach layers
             for layer in self.__layers:
-                layers[layer] = QgsVectorLayer(uri + layer, fileName + " " + layer,"ogr")
-            
-                if not layers[layer].isValid():
-                    print "Error on the layer", layers[layer].lastError()
+                self.signalText.emit(QApplication.translate("QuickOSM",u"Parsing layer : " + layer))
+                self.signalPercentage.emit(0)
+                layers[layer] = {}
                 
-            return layers              
-        
-        #Check if the order is node before way,relation
-        #We don't check way before relation, because we can have only nodes and relations
-        with open(self.__osmFile) as f:
-            for line in f:
-                if re.search(r'node',line):
-                    break
-                if re.search(r'(way|relation)',line):
-                    raise WrongOrderOSMException
-        
-        if self.parent.exiting:
-            self.parent.signalProcessThreadFinished.emit(-1)
-            return -1
-        
-        #Foreach layers
-        for layer in self.__layers:
-            self.signalText.emit(QApplication.translate("QuickOSM",u"Parsing layer : " + layer))
-            self.signalPercentage.emit(0)
-            layers[layer] = {}
-            
-            #Reading it with a QgsVectorLayer
-            layers[layer]['vectorLayer'] = QgsVectorLayer(uri + layer, "test_" + layer,"ogr")
-            
-            if layers[layer]['vectorLayer'].isValid() == False:
-                raise GeoAlgorithmExecutionException, "Error on the layer", layers[layer]['vectorLayer'].lastError()
-            
-            #Set some default tags
-            layers[layer]['tags'] = ['full_id','osm_id','osm_type']
-            
-            #Save the geometry type of the layer
-            layers[layer]['geomType'] = layers[layer]['vectorLayer'].wkbType()
-            
-            #Set a featureCount
-            layers[layer]['featureCount'] = 0
-            
-            for i, feature in enumerate(layers[layer]['vectorLayer'].getFeatures()):
-                layers[layer]['featureCount'] += 1
+                #Reading it with a QgsVectorLayer
+                layers[layer]['vectorLayer'] = QgsVectorLayer(uri + layer, "test_" + layer,"ogr")
                 
-                #Improve the parsing if comma in whitelist, we skip the parsing of tags, but featureCount is needed
-                if self.__whiteListColumn[layer] == ',':
-                    continue
+                if layers[layer]['vectorLayer'].isValid() == False:
+                    raise GeoAlgorithmExecutionException, "Error on the layer", layers[layer]['vectorLayer'].lastError()
                 
-                #Get the "others_tags" field
-                attrs = None
-                if layer in ['points','lines','multilinestrings','other_relations']:
-                    attrs = feature.attributes()[1:]
-                else:
-                    #In the multipolygons layer, there is one more column before "other_tags"
-                    attrs = feature.attributes()[2:]
+                #Set some default tags
+                layers[layer]['tags'] = ['full_id','osm_id','osm_type']
                 
-                if attrs[0]:
-                    hstore = pghstore.loads(attrs[0])
-                    for key in hstore:
-                        if key not in layers[layer]['tags']: #If the key in OSM is not already in the table
-                            if self.__whiteListColumn[layer]:
-                                if key in self.__whiteListColumn[layer]:
+                #Save the geometry type of the layer
+                layers[layer]['geomType'] = layers[layer]['vectorLayer'].wkbType()
+                
+                #Set a featureCount
+                layers[layer]['featureCount'] = 0
+                
+                for i, feature in enumerate(layers[layer]['vectorLayer'].getFeatures()):
+                    layers[layer]['featureCount'] += 1
+                    
+                    #Improve the parsing if comma in whitelist, we skip the parsing of tags, but featureCount is needed
+                    if self.__whiteListColumn[layer] == ',':
+                        continue
+                    
+                    #Get the "others_tags" field
+                    attrs = None
+                    if layer in ['points','lines','multilinestrings','other_relations']:
+                        attrs = feature.attributes()[1:]
+                    else:
+                        #In the multipolygons layer, there is one more column before "other_tags"
+                        attrs = feature.attributes()[2:]
+                    
+                    if attrs[0]:
+                        hstore = pghstore.loads(attrs[0])
+                        for key in hstore:
+                            if key not in layers[layer]['tags']: #If the key in OSM is not already in the table
+                                if self.__whiteListColumn[layer]:
+                                    if key in self.__whiteListColumn[layer]:
+                                        layers[layer]['tags'].append(key)
+                                else:
                                     layers[layer]['tags'].append(key)
-                            else:
-                                layers[layer]['tags'].append(key)
-                
-                percent = int((i+1)*100/len(self.__layers))
-                if percent % 5 == 0:                
-                    self.signalPercentage.emit(percent)
-                
-                if self.parent.exiting:
-                    self.parent.signalProcessThreadFinished.emit(-1)
-                    return -1
-        
-        #Delete empty layers if this option is set to True
-        if self.__deleteEmptyLayers:
-            deleteLayers = []
-            for keys,values in layers.iteritems() :
-                if values['featureCount'] < 1:
-                    deleteLayers.append(keys)
-            for layer in deleteLayers:
-                del layers[layer]
-
-        if self.parent.exiting:
-            self.parent.signalProcessThreadFinished.emit(-1)
-            return -1
-        
-        #Creating GeoJSON files for each layers
-        for layer in self.__layers:
-            self.signalText.emit(QApplication.translate("QuickOSM",u"Creating GeoJSON file : " + layer))
-            self.signalPercentage.emit(0)
-            
-            #Creating the temp file
-            tf = tempfile.NamedTemporaryFile(delete=False,suffix="_"+layer+".geojson")
-            layers[layer]['geojsonFile'] = tf.name
-            tf.flush()
-            tf.close()
-            
-            #Adding the attribute table
-            fields = QgsFields()
-            for key in layers[layer]['tags']:
-                fields.append(QgsField(key, QVariant.String))
-            fileWriter = QgsVectorFileWriter(layers[layer]['geojsonFile'],'UTF-8',fields,layers[layer]['geomType'],layers[layer]['vectorLayer'].crs(),'GeoJSON')
-            
-            #Foreach feature in the layer
-            for i, feature in enumerate(layers[layer]['vectorLayer'].getFeatures()):
-                fet = QgsFeature()
-                fet.setGeometry(feature.geometry())
-                
-                newAttrs= []
-                attrs = feature.attributes()
-                
-                if layer in ['points','lines','multilinestrings']:
-                    if layer == 'points':
-                        osmType = "node"
-                    elif layer == 'lines':
-                        osmType = "way"
-                    elif layer == 'multilinestrings':
-                        osmType = 'relation'
                     
-                    newAttrs.append(self.DIC_OSM_TYPE[osmType]+str(attrs[0]))
-                    newAttrs.append(attrs[0])
-                    newAttrs.append(osmType)
+                    percent = int((i+1)*100/len(self.__layers))
+                    if percent % 5 == 0:                
+                        self.signalPercentage.emit(percent)
                     
-                    if attrs[1]:
-                        hstore = pghstore.loads(attrs[1])
+                    if self.parent.exiting:
+                        self.parent.signalProcessThreadFinished.emit(-1)
+                        return -1
+            
+            #Delete empty layers if this option is set to True
+            if self.__deleteEmptyLayers:
+                deleteLayers = []
+                for keys,values in layers.iteritems() :
+                    if values['featureCount'] < 1:
+                        deleteLayers.append(keys)
+                for layer in deleteLayers:
+                    del layers[layer]
+    
+            if self.parent.exiting:
+                self.parent.signalProcessThreadFinished.emit(-1)
+                return -1
+            
+            #Creating GeoJSON files for each layers
+            for layer in self.__layers:
+                self.signalText.emit(QApplication.translate("QuickOSM",u"Creating GeoJSON file : " + layer))
+                self.signalPercentage.emit(0)
+                
+                #Creating the temp file
+                tf = tempfile.NamedTemporaryFile(delete=False,suffix="_"+layer+".geojson")
+                layers[layer]['geojsonFile'] = tf.name
+                tf.flush()
+                tf.close()
+                
+                #Adding the attribute table
+                fields = QgsFields()
+                for key in layers[layer]['tags']:
+                    fields.append(QgsField(key, QVariant.String))
+                fileWriter = QgsVectorFileWriter(layers[layer]['geojsonFile'],'UTF-8',fields,layers[layer]['geomType'],layers[layer]['vectorLayer'].crs(),'GeoJSON')
+                
+                #Foreach feature in the layer
+                for i, feature in enumerate(layers[layer]['vectorLayer'].getFeatures()):
+                    fet = QgsFeature()
+                    fet.setGeometry(feature.geometry())
+                    
+                    newAttrs= []
+                    attrs = feature.attributes()
+                    
+                    if layer in ['points','lines','multilinestrings']:
+                        if layer == 'points':
+                            osmType = "node"
+                        elif layer == 'lines':
+                            osmType = "way"
+                        elif layer == 'multilinestrings':
+                            osmType = 'relation'
+                        
+                        newAttrs.append(self.DIC_OSM_TYPE[osmType]+str(attrs[0]))
+                        newAttrs.append(attrs[0])
+                        newAttrs.append(osmType)
+                        
+                        if attrs[1]:
+                            hstore = pghstore.loads(attrs[1])
+                            for tag in layers[layer]['tags'][3:]:
+                                if unicode(tag) in hstore:
+                                    newAttrs.append(hstore[tag])
+                                else:
+                                    newAttrs.append("")
+                            fet.setAttributes(newAttrs)
+                            fileWriter.addFeature(fet)
+                        
+                    elif layer == 'multipolygons':
+                        if attrs[0]:
+                            osmType = "relation"
+                            newAttrs.append(self.DIC_OSM_TYPE[osmType]+str(attrs[0]))
+                            newAttrs.append(str(attrs[0]))
+                        else:
+                            osmType = "way"
+                            newAttrs.append(self.DIC_OSM_TYPE[osmType]+str(attrs[1]))
+                            newAttrs.append(attrs[1])
+                        newAttrs.append(osmType)
+                        
+                        hstore = pghstore.loads(attrs[2])
                         for tag in layers[layer]['tags'][3:]:
                             if unicode(tag) in hstore:
                                 newAttrs.append(hstore[tag])
@@ -222,36 +245,19 @@ class OsmParser(QThread):
                                 newAttrs.append("")
                         fet.setAttributes(newAttrs)
                         fileWriter.addFeature(fet)
-                    
-                elif layer == 'multipolygons':
-                    if attrs[0]:
-                        osmType = "relation"
-                        newAttrs.append(self.DIC_OSM_TYPE[osmType]+str(attrs[0]))
-                        newAttrs.append(str(attrs[0]))
-                    else:
-                        osmType = "way"
-                        newAttrs.append(self.DIC_OSM_TYPE[osmType]+str(attrs[1]))
-                        newAttrs.append(attrs[1])
-                    newAttrs.append(osmType)
-                    
-                    hstore = pghstore.loads(attrs[2])
-                    for tag in layers[layer]['tags'][3:]:
-                        if unicode(tag) in hstore:
-                            newAttrs.append(hstore[tag])
-                        else:
-                            newAttrs.append("")
-                    fet.setAttributes(newAttrs)
-                    fileWriter.addFeature(fet)
-            
-                percent = int((i+1)*100/layers[layer]['featureCount'])
-                if percent % 5 == 0:                
-                    self.signalPercentage.emit(percent)
-                    
-                if self.parent.exiting:
-                    self.parent.signalProcessThreadFinished.emit(-1)
-                    return -1
-                  
-            del fileWriter
-            
-        self.layers = layers
-        return
+                
+                    percent = int((i+1)*100/layers[layer]['featureCount'])
+                    if percent % 5 == 0:                
+                        self.signalPercentage.emit(percent)
+                        
+                    if self.parent.exiting:
+                        self.parent.signalProcessThreadFinished.emit(-1)
+                        return -1
+                      
+                del fileWriter
+                
+            self.layers = layers
+            return
+        
+        except Exception, e:
+            self.signalException.emit(e)

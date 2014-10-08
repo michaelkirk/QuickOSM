@@ -32,6 +32,7 @@ class QuickOsmException(GeoAlgorithmExecutionException):
         GeoAlgorithmExecutionException.__init__(self,msg)    
         self.level = QgsMessageBar.CRITICAL
         self.duration = 7
+        self.id = 0
 
 '''
 Overpass or network
@@ -149,3 +150,10 @@ class OutPutGeomTypesException(QuickOsmException):
         if not msg:
             msg= QApplication.translate("Exception", u"No outputs selected")
         QuickOsmException.__init__(self,msg)
+        
+class QueryCanceledException(QuickOsmException):
+    def __init__(self, msg=None):
+        if not msg:
+            msg= QApplication.translate("Exception", u"Query canceled")
+        QuickOsmException.__init__(self,msg)
+        print "canceled"

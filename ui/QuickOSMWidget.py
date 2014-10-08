@@ -175,23 +175,18 @@ class QuickOSMWidget(QWidget):
         self.label_progress.setText(text)
         QApplication.processEvents()
     
-    def displayGeoAlgorithmException(self,e):
-        '''
-        Display quickosm's exceptions 
-        '''
-        self.label_progress.setText("")
-        iface.messageBar().pushMessage(e.msg, level=e.level , duration=e.duration)
-
     def displayException(self,e):
         '''
-        Display others exceptions 
+        Display quickosm's exceptions which are received by a signal (in some threads)
         '''
-        print e
-        '''import sys,os
-        exc_type, exc_obj, exc_tb = sys.exc_info()
-        fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-        print(exc_type, fname, exc_tb.tb_lineno)
-        ex_type, ex, tb = sys.exc_info()
-        import traceback
-        traceback.print_tb(tb)
-        iface.messageBar().pushMessage("Error in the python console, please report it", level=QgsMessageBar.CRITICAL , duration=5)'''
+        print "exception receive"
+        import sys
+        print sys.exc_info()
+        print e.__class__.__name__
+        print e.args
+                
+        self.label_progress.setText("")
+        if isinstance(e, QuickOsmException):
+            iface.messageBar().pushMessage(e.msg, level=e.level , duration=e.duration)
+        #else:
+        #    iface.messageBar().pushMessage(e.args[0], level=QgsMessageBar.CRITICAL , duration=5)
